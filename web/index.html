@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sara Log Pusher WebUI</title>
+    <style>
+        body {
+            background-color: #0d0d0d;
+            color: #00ffcc;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 20px;
+            margin: 0;
+        }
+        .container {
+            max-width: 600px;
+            margin: auto;
+            border: 1px solid #00ffcc;
+            padding: 20px;
+            box-shadow: 0 0 15px #00ffcc;
+            background: rgba(0, 255, 204, 0.05);
+        }
+        h1 { text-align: center; color: #ff00ff; text-shadow: 0 0 10px #ff00ff; }
+        .group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a1a;
+            border: 1px solid #00ffcc;
+            color: #fff;
+            box-sizing: border-box;
+        }
+        .btn {
+            width: 100%;
+            padding: 15px;
+            background: #ff00ff;
+            border: none;
+            color: #fff;
+            font-size: 1.1em;
+            cursor: pointer;
+            margin-top: 10px;
+            box-shadow: 0 0 10px #ff00ff;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-secondary { background: #00ffcc; color: #000; box-shadow: 0 0 10px #00ffcc; }
+        #console {
+            margin-top: 20px;
+            height: 200px;
+            background: #000;
+            border: 1px solid #00ffcc;
+            padding: 10px;
+            overflow-y: auto;
+            font-size: 0.85em;
+            color: #33ff33;
+        }
+        .status { margin-top: 10px; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SARA LOG PUSHER</h1>
+        <div class="group">
+            <label>GITHUB TOKEN (Private Repo Access)</label>
+            <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx">
+        </div>
+        <div class="group">
+            <label>目标仓库 (User/Repo)</label>
+            <input type="text" id="repo" placeholder="ahao15800/sara-logs">
+        </div>
+        <button class="btn btn-secondary" onclick="saveConfig()">保存配置</button>
+        <button class="btn" onclick="runDiagnostic()">立即体检 (Test Now)</button>
+        
+        <div class="status" id="status">加载中...</div>
+        <div id="console"></div>
+    </div>
+
+    <script>
+        const CONF_PATH = "/data/adb/modules/sara_log_pusher/config.conf";
+        const SCRIPT_PATH = "/data/adb/modules/sara_log_pusher/sara_log_pusher.sh";
+
+        async function loadConfig() {
+            try {
+                const { stdout } = await ksu.exec(`cat ${CONF_PATH}`);
+                const token = stdout.match(/GITHUB_TOKEN="(.*?)"/)?.[1] || "";
+                const repo = stdout.match(/REPO="(.*?)"/)?.[1] || "";
+                const last = stdout.match(/LAST_RUN="(.*?)"/)?.[1] || "从未运行";
+                
+                document.getElementById('token').value = token;
+                document.getElementById('repo').value = repo;
+                document.getElementById('status').innerText = `上次运行时间: ${last === "0" ? "从未运行" : new Date(last * 1000).toLocaleString()}`;
+            } catch (e) {
+                log("读取配置失败: " + e);
+            }
+        }
+
+        async function saveConfig() {
+            const token = document.getElementById('token').value;
+            const repo = document.getElementById('repo').value;
+            const cmd = `sed -i 's/GITHUB_TOKEN=.*/GITHUB_TOKEN="${token}"/' ${CONF_PATH} && sed -i 's|REPO=.*|REPO="${repo}"|' ${CONF_PATH}`;
+            try {
+                await ksu.exec(cmd);
+                alert("配置已保存！");
+                loadConfig();
+            } catch (e) {
+                alert("保存失败: " + e);
+            }
+        }
+
+        async function runDiagnostic() {
+            log("[!] 启动即时诊断任务...");
+            try {
+                const { stdout, stderr } = await ksu.exec(`sh ${SCRIPT_PATH}`);
+                log(stdout);
+                if (stderr) log("ERROR: " + stderr);
+                loadConfig();
+            } catch (e) {
+                log("执行异常: " + e);
+            }
+        }
+
+        function log(msg) {
+            const el = document.getElementById('console');
+            el.innerHTML += `<div>> ${msg}</div>`;
+            el.scrollTop = el.scrollHeight;
+        }
+
+        window.onload = loadConfig;
+    </script>
+</body>
+</html>
