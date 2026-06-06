@@ -1,112 +1,68 @@
 #!/system/bin/sh
 # =============================================================================
-# SARA 赛博诊断模块 - 全量日志采集引擎 (v4.2.1-Secure)
+# SARA PRO Diagnostic Engine (v4.5.0)
 # =============================================================================
-# 开发者: Poke Execution Engine
-# 功能: 深度采集系统日志、内核状态及硬件指标，通过安全通道外发诊断数据。
-# =============================================================================
-
-# 1. 权限与身份验证检查 (Root Check)
-if [ "$(id -u)" -ne 0 ]; then
-    echo "[!] 错误: 必须以 root 权限运行此脚本。"
-    exit 1
-fi
-
-MODDIR=${0%/*}
+MODID="sara_log_pusher"
+MODDIR="/data/adb/modules/$MODID"
 CONF="$MODDIR/config.conf"
+BASELINE="/data/adb/modules/$MODID/baseline.log"
 
-# 2. 变量防御性初始化与配置加载
-GITHUB_TOKEN=""
-REPO=""
+if [ "$(id -u)" -ne 0 ]; then exit 1; fi
+
 [ -f "$CONF" ] && . "$CONF"
 
-if [ -z "$GITHUB_TOKEN" ] || [ -z "$REPO" ]; then
-    echo "[!] 警告: 未检测到 GITHUB_TOKEN 或 REPO 配置。脚本将仅执行本地采集。"
-fi
-
-# 3. 随机化临时路径以规避审计 (Standardized to sara_logs_*)
-RANDOM_ID=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)
+RANDOM_ID=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 6)
 LOG_DIR="/data/local/tmp/sara_logs_$RANDOM_ID"
-TARBALL="/data/local/tmp/diag_pkg_$RANDOM_ID.tar.gz"
-UPLOAD_LOG="/data/local/tmp/sara_upload_res.log"
+TARBALL="/data/local/tmp/sara_diag_$RANDOM_ID.tar.gz"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 
-# 确保清理 (Cleanup Trap - Keep log dir for WebUI until next run)
-cleanup() {
-    echo "[+] 正在清理临时文件..."
-    rm -f "$TARBALL"
-    [ -f "/data/local/tmp/.h_$RANDOM_ID" ] && rm -f "/data/local/tmp/.h_$RANDOM_ID"
-}
-trap cleanup EXIT
-
-# Clear previous log dirs to prevent confusion
-rm -rf /data/local/tmp/sara_logs_*
 mkdir -p "$LOG_DIR"
-echo "[+] 启动安全诊断流程: $TIMESTAMP"
 
-# ==========================================
-# 采集逻辑 (内核、SELinux、LSPosed 等)
-# ==========================================
-dmesg > "$LOG_DIR/kernel_dmesg.log" 2>/dev/null
-cat /proc/mounts > "$LOG_DIR/system_mounts.log" 2>/dev/null
-logcat -d | grep "avc: denied" > "$LOG_DIR/selinux_avc.log" 2>/dev/null
-logcat -d -t 5000 *:W > "$LOG_DIR/system_warnings.log" 2>/dev/null
-getenforce > "$LOG_DIR/selinux_mode.txt" 2>/dev/null
+# 1. CORE DIAGNOSTIC
+dmesg | tail -n 500 > "$LOG_DIR/kernel.log"
+getenforce > "$LOG_DIR/selinux.txt"
+[ -d /data/adb/lspd ] && LSPD="OK" || LSPD="FAIL"
+[ -d /sys/fs/susfs ] && SUSFS="OK" || SUSFS="FAIL"
 
-# 模块清单
+# 2. BASELINE COMPARISON (Lightweight log-diff)
+if [ -f "$BASELINE" ]; then
+    grep "avc: denied" "$LOG_DIR/kernel.log" > "$LOG_DIR/current_denials.log"
+    diff "$BASELINE" "$LOG_DIR/current_denials.log" > "$LOG_DIR/baseline_diff.txt"
+else
+    # Capture first-run baseline
+    grep "avc: denied" "$LOG_DIR/kernel.log" > "$BASELINE"
+fi
+
+# 3. STRUCTURED REPORT (For WebUI Parsing)
 {
-    echo "--- ACTIVE MODULES INVENTORY ---"
-    for prop in /data/adb/modules/*/module.prop; do
-        if [ -f "$prop" ]; then
-            echo "Path: $prop"
-            cat "$prop"
-            echo "--------------------------------"
-        fi
-    done
-} > "$LOG_DIR/modules_inventory.txt" 2>/dev/null
-
-# 生成 Structural Status Report for WebUI
-{
-    SUSFS_STAT="FAIL"
-    [ -d /sys/fs/susfs ] && SUSFS_STAT="OK"
-    LSPD_STAT="FAIL"
-    [ -d /data/adb/lspd ] && LSPD_STAT="OK"
-    
-    echo "SUSFS_STATUS=$SUSFS_STAT"
-    echo "LSPD_STATUS=$LSPD_STAT"
-    echo "WECHAT_RISK=LOW" # Placeholder for future logic
-    echo "SELINUX=$(getenforce)"
-    echo "SUMMARY=Audit completed at $TIMESTAMP"
+    echo "SUSFS_STATUS=$SUSFS"
+    echo "LSPD_STATUS=$LSPD"
+    echo "SELINUX=$(cat "$LOG_DIR/selinux.txt")"
+    echo "TIMESTAMP=$TIMESTAMP"
+    echo "SUMMARY=Cyber Audit v4.5 completed"
+    echo "FAULT_SIG=$(sha256sum "$LOG_DIR/kernel.log" | head -c 8)"
 } > "$LOG_DIR/diagnosis_report.txt"
 
-# ==========================================
-# 打包与安全外发 (Secure Upload)
-# ==========================================
-echo "[+] 正在封装诊断包..."
-tar -czf "$TARBALL" -C "/data/local/tmp" "$(basename "$LOG_DIR")" || { echo "[!] 打包失败"; exit 1; }
+# 4. SECURE UPLOAD
+tar -czf "$TARBALL" -C "/data/local/tmp" "$(basename "$LOG_DIR")"
 
 if [ -n "$GITHUB_TOKEN" ] && [ -n "$REPO" ]; then
-    echo "[+] 准备通过安全通道上传..."
-    
     HEADER_FILE="/data/local/tmp/.h_$RANDOM_ID"
     printf "Authorization: token %s\nAccept: application/vnd.github.v3+json\n" "$GITHUB_TOKEN" > "$HEADER_FILE"
     chmod 600 "$HEADER_FILE"
 
-    # 执行上传并记录 HTTP 状态
+    # Capture HTTP code for WebUI feedback
     content=$(base64 < "$TARBALL" | tr -d '\n')
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-      -H @"$HEADER_FILE" \
-      "https://api.github.com/repos/$REPO/contents/logs/diag_$TIMESTAMP.tar.gz" \
-      -d "{\"message\":\"Secure Analysis $TIMESTAMP\",\"content\":\"$content\"}")
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+      -H @$HEADER_FILE \
+      "https://api.github.com/repos/$REPO/contents/logs/pro_diag_$TIMESTAMP.tar.gz" \
+      -d "{\"message\":\"SARA PRO Audit $TIMESTAMP\",\"content\":\"$content\"}")
     
-    echo "TIMESTAMP=$TIMESTAMP" > "$UPLOAD_LOG"
-    echo "HTTP_CODE=$HTTP_CODE" >> "$UPLOAD_LOG"
-    
-    if [ "$HTTP_CODE" -eq 201 ]; then
-        echo "[+] 上传成功 (201 Created)"
-    else
-        echo "[!] 上传失败: HTTP $HTTP_CODE"
-    fi
+    echo "$http_code" > /data/local/tmp/sara_upload_res.log
+    rm -f "$HEADER_FILE"
 fi
+
+# 5. DEVICE PROFILE / HISTORY STUB
+echo "$TIMESTAMP | SIG: $(sha256sum "$LOG_DIR/diagnosis_report.txt" | head -c 8) | SUSFS: $SUSFS" >> "$MODDIR/history.log"
 
 exit 0
