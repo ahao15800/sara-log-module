@@ -97,7 +97,7 @@
 <body>
     <div class="scanline"></div>
     <div class="header">
-        <h1>SARA_DIAGNOSTIC_v4.0</h1>
+        <h1>SARA_DIAGNOSTIC_v4.2</h1>
         <div id="clock">SYSTEM_UPTIME: --</div>
     </div>
 
@@ -133,23 +133,26 @@
     <script>
         const CONF_PATH = "/data/adb/modules/sara_log_pusher/config.conf";
         const SCRIPT_PATH = "/data/adb/modules/sara_log_pusher/sara_log_pusher.sh";
-        const REPORT_PATH = "/data/local/tmp/sara_logs_*/diagnosis_report.txt"; // Shell handles glob
+        const REPORT_PATH = "/data/local/tmp/sara_logs_*/diagnosis_report.txt";
 
         async function exec(cmd) {
             try { return await ksu.exec(cmd); } catch (e) { return { error: e }; }
         }
 
         async function updateUI() {
-            // Read latest report
-            const { stdout } = await exec(`cat /data/local/tmp/sara_logs_*/diagnosis_report.txt | tail -n 10`);
+            const { stdout } = await exec(`cat ${REPORT_PATH}`);
             if (!stdout) return;
 
             const lines = stdout.split('\n');
             const data = {};
-            lines.forEach(l => { const [k, v] = l.split('='); if(k) data[k] = v; });
+            lines.forEach(l => { 
+                const part = l.split('='); 
+                if(part.length === 2) data[part[0]] = part[1].trim(); 
+            });
 
             const setStat = (id, val) => {
                 const el = document.getElementById(id);
+                if(!el) return;
                 el.innerText = val || "UNKNOWN";
                 el.className = "value " + (val === "OK" || val === "Enforcing" ? "status-ok" : (val === "LOW" ? "status-ok" : (val === "HIGH" || val === "FAIL" ? "status-fail" : "status-warn")));
             };
@@ -160,7 +163,11 @@
             setStat("stat-selinux", data.SELINUX);
             
             if (data.SUMMARY) {
-                document.getElementById('console').innerHTML += `<div>> [REPORT]: ${data.SUMMARY}</div>`;
+                const con = document.getElementById('console');
+                if (!con.innerHTML.includes(data.SUMMARY)) {
+                    con.innerHTML += `<div>> [REPORT]: ${data.SUMMARY}</div>`;
+                    con.scrollTop = con.scrollHeight;
+                }
             }
         }
 
@@ -175,7 +182,7 @@
         async function runDiag() {
             document.getElementById('console').innerHTML += `<div>> EXECUTING_SYSTEM_AUDIT...</div>`;
             await exec(`sh ${SCRIPT_PATH}`);
-            setTimeout(updateUI, 2000);
+            setTimeout(updateUI, 2500);
         }
 
         window.onload = () => {

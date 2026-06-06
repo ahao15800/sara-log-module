@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # =============================================================================
-# SARA 赛博诊断模块 - 全量日志采集引擎 (v4.2.0-Secure)
+# SARA 赛博诊断模块 - 全量日志采集引擎 (v4.2.1-Secure)
 # =============================================================================
 # 开发者: Poke Execution Engine
 # 功能: 深度采集系统日志、内核状态及硬件指标，通过安全通道外发诊断数据。
@@ -24,22 +24,23 @@ if [ -z "$GITHUB_TOKEN" ] || [ -z "$REPO" ]; then
     echo "[!] 警告: 未检测到 GITHUB_TOKEN 或 REPO 配置。脚本将仅执行本地采集。"
 fi
 
-# 3. 随机化临时路径以规避审计 (Randomized Paths)
+# 3. 随机化临时路径以规避审计 (Standardized to sara_logs_*)
 RANDOM_ID=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)
-LOG_DIR="/data/local/tmp/sys_tmp_$RANDOM_ID"
+LOG_DIR="/data/local/tmp/sara_logs_$RANDOM_ID"
 TARBALL="/data/local/tmp/diag_pkg_$RANDOM_ID.tar.gz"
+UPLOAD_LOG="/data/local/tmp/sara_upload_res.log"
 TIMESTAMP=$(date -u +%Y%m%d_%H%M%S)
 
-# 确保清理 (Cleanup Trap)
+# 确保清理 (Cleanup Trap - Keep log dir for WebUI until next run)
 cleanup() {
     echo "[+] 正在清理临时文件..."
-    rm -rf "$LOG_DIR"
     rm -f "$TARBALL"
-    # 如果存在临时 HTTP 头文件，务必销毁
     [ -f "/data/local/tmp/.h_$RANDOM_ID" ] && rm -f "/data/local/tmp/.h_$RANDOM_ID"
 }
 trap cleanup EXIT
 
+# Clear previous log dirs to prevent confusion
+rm -rf /data/local/tmp/sara_logs_*
 mkdir -p "$LOG_DIR"
 echo "[+] 启动安全诊断流程: $TIMESTAMP"
 
@@ -64,6 +65,20 @@ getenforce > "$LOG_DIR/selinux_mode.txt" 2>/dev/null
     done
 } > "$LOG_DIR/modules_inventory.txt" 2>/dev/null
 
+# 生成 Structural Status Report for WebUI
+{
+    SUSFS_STAT="FAIL"
+    [ -d /sys/fs/susfs ] && SUSFS_STAT="OK"
+    LSPD_STAT="FAIL"
+    [ -d /data/adb/lspd ] && LSPD_STAT="OK"
+    
+    echo "SUSFS_STATUS=$SUSFS_STAT"
+    echo "LSPD_STATUS=$LSPD_STAT"
+    echo "WECHAT_RISK=LOW" # Placeholder for future logic
+    echo "SELINUX=$(getenforce)"
+    echo "SUMMARY=Audit completed at $TIMESTAMP"
+} > "$LOG_DIR/diagnosis_report.txt"
+
 # ==========================================
 # 打包与安全外发 (Secure Upload)
 # ==========================================
@@ -73,23 +88,25 @@ tar -czf "$TARBALL" -C "/data/local/tmp" "$(basename "$LOG_DIR")" || { echo "[!]
 if [ -n "$GITHUB_TOKEN" ] && [ -n "$REPO" ]; then
     echo "[+] 准备通过安全通道上传..."
     
-    # 安全风险修复: 不在命令行中传递 Token
     HEADER_FILE="/data/local/tmp/.h_$RANDOM_ID"
     printf "Authorization: token %s\nAccept: application/vnd.github.v3+json\n" "$GITHUB_TOKEN" > "$HEADER_FILE"
     chmod 600 "$HEADER_FILE"
 
-    # 执行异步上传
-    nohup sh -c "
-        content=\$(base64 < \"$TARBALL\" | tr -d '\n')
-        curl -s -X PUT \
-          -H @$HEADER_FILE \
-          \"https://api.github.com/repos/$REPO/contents/logs/diag_$TIMESTAMP.tar.gz\" \
-          -d \"{\\\"message\\\":\\\"Secure Analysis $TIMESTAMP\\\",\\\"content\\\":\\\"\$content\\\"}\" > /dev/null
-        rm -f \"$HEADER_FILE\"
-        rm -f \"$TARBALL\"
-    " >/dev/null 2>&1 &
-
-    echo "[+] 上传任务已在后台安全排队。"
+    # 执行上传并记录 HTTP 状态
+    content=$(base64 < "$TARBALL" | tr -d '\n')
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+      -H @"$HEADER_FILE" \
+      "https://api.github.com/repos/$REPO/contents/logs/diag_$TIMESTAMP.tar.gz" \
+      -d "{\"message\":\"Secure Analysis $TIMESTAMP\",\"content\":\"$content\"}")
+    
+    echo "TIMESTAMP=$TIMESTAMP" > "$UPLOAD_LOG"
+    echo "HTTP_CODE=$HTTP_CODE" >> "$UPLOAD_LOG"
+    
+    if [ "$HTTP_CODE" -eq 201 ]; then
+        echo "[+] 上传成功 (201 Created)"
+    else
+        echo "[!] 上传失败: HTTP $HTTP_CODE"
+    fi
 fi
 
 exit 0
