@@ -1,6 +1,6 @@
 id=sara_log_pusher
-name=Sara Log Pusher & AI Diagnostic
-version=v2.0.0
-versionCode=2000
-author=Poke & ahao15800
-description=一键打包 Android 16/HyperOS 底层日志（dmesg, binder, namespaces, TEE）自动定时上传 GitHub，支持内置 WebUI 配置 Token 和立即体检。
+name=SARA 赛博诊断模块
+version=v4.1.0-Ultimate
+versionCode=410
+author=ahao15800 & Poke Architect
+description=Production-grade diagnostic engine for KernelSU/SUSFS. Supports cyberpunk WebUI, anti-detection logging, and 27-hour auto-audit cycles.
