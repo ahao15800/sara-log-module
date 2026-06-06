@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SARA 赛博诊断终端</title>
+    <style>
+        :root {
+            --neon-green: #00ff41;
+            --neon-red: #ff3131;
+            --neon-yellow: #f5ed00;
+            --cyber-blue: #0abde3;
+            --dark-bg: #050505;
+            --panel-bg: rgba(16, 16, 16, 0.9);
+        }
+        body {
+            background-color: var(--dark-bg);
+            color: var(--neon-green);
+            font-family: 'Courier New', Courier, monospace;
+            margin: 0;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+        .scanline {
+            width: 100%; height: 2px;
+            background: rgba(0, 255, 65, 0.1);
+            position: fixed; top: 0; left: 0;
+            z-index: 100; pointer-events: none;
+            animation: scan 4s linear infinite;
+        }
+        @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+
+        .header {
+            border-bottom: 2px solid var(--neon-green);
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .header h1 { margin: 0; font-size: 1.5rem; text-shadow: 0 0 10px var(--neon-green); }
+
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: var(--panel-bg);
+            border: 1px solid var(--cyber-blue);
+            padding: 15px;
+            text-align: center;
+            position: relative;
+            clip-path: polygon(0 0, 100% 0, 100% 85%, 85% 100%, 0 100%);
+        }
+        .card .label { font-size: 0.7rem; color: var(--cyber-blue); text-transform: uppercase; margin-bottom: 5px; }
+        .card .value { font-size: 1.2rem; font-weight: bold; }
+        
+        .status-ok { color: var(--neon-green); text-shadow: 0 0 5px var(--neon-green); }
+        .status-warn { color: var(--neon-yellow); text-shadow: 0 0 5px var(--neon-yellow); }
+        .status-fail { color: var(--neon-red); text-shadow: 0 0 5px var(--neon-red); }
+
+        #console {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--neon-green);
+            height: 200px;
+            padding: 10px;
+            font-size: 0.8rem;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            background: transparent;
+            border: 1px solid var(--neon-green);
+            color: var(--neon-green);
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+            text-transform: uppercase;
+        }
+        .btn:hover { background: var(--neon-green); color: black; box-shadow: 0 0 15px var(--neon-green); }
+        
+        input {
+            background: #111;
+            border: 1px solid var(--cyber-blue);
+            color: white;
+            padding: 8px;
+            width: 100%;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+    <div class="scanline"></div>
+    <div class="header">
+        <h1>SARA_DIAGNOSTIC_v4.0</h1>
+        <div id="clock">SYSTEM_UPTIME: --</div>
+    </div>
+
+    <div class="health-grid">
+        <div class="card">
+            <div class="label">Kernel (SUSFS)</div>
+            <div id="stat-susfs" class="value">INIT...</div>
+        </div>
+        <div class="card">
+            <div class="label">Middleware (LSPD)</div>
+            <div id="stat-lspd" class="value">INIT...</div>
+        </div>
+        <div class="card">
+            <div class="label">WeChat Risk</div>
+            <div id="stat-wechat" class="value">INIT...</div>
+        </div>
+        <div class="card">
+            <div class="label">SELinux</div>
+            <div id="stat-selinux" class="value">INIT...</div>
+        </div>
+    </div>
+
+    <div id="console">> Awaiting manual trigger...</div>
+
+    <div class="config-panel">
+        <h3 style="color:var(--cyber-blue)">TERMINAL_CONFIG</h3>
+        <input type="password" id="token" placeholder="ACCESS_TOKEN (GitHub PAT)">
+        <input type="text" id="repo" placeholder="LOG_REPOSITORY (User/Repo)">
+        <button class="btn" onclick="saveConfig()">Save Config</button>
+        <button class="btn" onclick="runDiag()">Execute Audit</button>
+    </div>
+
+    <script>
+        const CONF_PATH = "/data/adb/modules/sara_log_pusher/config.conf";
+        const SCRIPT_PATH = "/data/adb/modules/sara_log_pusher/sara_log_pusher.sh";
+        const REPORT_PATH = "/data/local/tmp/sara_logs_*/diagnosis_report.txt"; // Shell handles glob
+
+        async function exec(cmd) {
+            try { return await ksu.exec(cmd); } catch (e) { return { error: e }; }
+        }
+
+        async function updateUI() {
+            // Read latest report
+            const { stdout } = await exec(`cat /data/local/tmp/sara_logs_*/diagnosis_report.txt | tail -n 10`);
+            if (!stdout) return;
+
+            const lines = stdout.split('\n');
+            const data = {};
+            lines.forEach(l => { const [k, v] = l.split('='); if(k) data[k] = v; });
+
+            const setStat = (id, val) => {
+                const el = document.getElementById(id);
+                el.innerText = val || "UNKNOWN";
+                el.className = "value " + (val === "OK" || val === "Enforcing" ? "status-ok" : (val === "LOW" ? "status-ok" : (val === "HIGH" || val === "FAIL" ? "status-fail" : "status-warn")));
+            };
+
+            setStat("stat-susfs", data.SUSFS_STATUS);
+            setStat("stat-lspd", data.LSPD_STATUS);
+            setStat("stat-wechat", data.WECHAT_RISK);
+            setStat("stat-selinux", data.SELINUX);
+            
+            if (data.SUMMARY) {
+                document.getElementById('console').innerHTML += `<div>> [REPORT]: ${data.SUMMARY}</div>`;
+            }
+        }
+
+        async function saveConfig() {
+            const token = document.getElementById('token').value;
+            const repo = document.getElementById('repo').value;
+            await exec(`sed -i 's|GITHUB_TOKEN=.*|GITHUB_TOKEN="${token}"|' ${CONF_PATH} || echo 'GITHUB_TOKEN="${token}"' >> ${CONF_PATH}`);
+            await exec(`sed -i 's|REPO=.*|REPO="${repo}"|' ${CONF_PATH} || echo 'REPO="${repo}"' >> ${CONF_PATH}`);
+            alert("CONFIG_SAVED");
+        }
+
+        async function runDiag() {
+            document.getElementById('console').innerHTML += `<div>> EXECUTING_SYSTEM_AUDIT...</div>`;
+            await exec(`sh ${SCRIPT_PATH}`);
+            setTimeout(updateUI, 2000);
+        }
+
+        window.onload = () => {
+            setInterval(() => {
+                document.getElementById('clock').innerText = "SYS_TIME: " + new Date().toLocaleTimeString();
+            }, 1000);
+            updateUI();
+        };
+    </script>
+</body>
+</html>
